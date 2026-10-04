@@ -1,0 +1,71 @@
+# Every tunable of the experiment lives here. Thresholds were fixed a priori and are
+# NOT tuned on the test seeds.
+sim:
+  road_seed: 7            # fixes road appearance and event-type camera signatures
+  n_segments: 40
+  seg_time_s: 6.7         # time a vehicle needs per segment
+  rest_s: 120.0           # gap between laps
+  n_vehicles: 8
+  duration_s: 7200.0
+  time_jitter_s: 1.0
+  n_events: 14            # condition changes injected per run
+  event_min_s: 900.0
+  event_max_s: 2400.0
+  effect_prob: 0.85       # chance a vehicle's signals reflect an active event
+  cam_dim: 16
+  cam_noise: 0.3
+  appearance_std: 1.0
+  slip_base: 0.05
+  slip_sd: 0.02
+  decel_base: 1.0
+  decel_sd: 0.4
+  vehicle_slip_bias_sd: 0.01
+  kinds:
+    low_traction:         # strong CAN signature, weak camera signature
+      weight: 0.5
+      slip_shift: 0.07
+      decel_shift: 0.0
+      cam_shift: 0.1
+    obstruction:          # strong camera signature, weak CAN signature
+      weight: 0.5
+      slip_shift: 0.0
+      decel_shift: 0.5
+      cam_shift: 0.5
+
+memory:
+  half_life_s: 900.0      # evidence halves every 15 min
+  prior_p: 0.05
+  llr_clip: 4.0
+  ledger_max_per_segment: 200
+
+warn:
+  p_threshold: 0.8
+  min_n_eff: 0.5
+
+timestamp:                # baseline: raw single-threshold trigger held for a fixed window
+  hold_s: 900.0
+  slip_trigger: 0.10
+  decel_trigger: 2.5
+
+recommend:
+  window_s: 1800.0
+  min_vehicles: 2
+  max_age_s: 900.0
+  conflict_ratio: 0.5
+  dominance: 2.0
+  max_cited: 6
+  max_frames: 3
+  policy:
+    reduced_traction:
+      - "Warn approaching vehicles about reduced traction on segment {segment}."
+      - "Propose a review of the speed setting for segment {segment}."
+    visual_obstruction:
+      - "Warn approaching vehicles about a possible obstruction on segment {segment}."
+      - "Propose a review of routing around segment {segment}."
+    unspecified_condition_change:
+      - "Flag segment {segment} for operator review: conditions changed, cause unclear."
+
+eval:
+  train_seed: 1000
+  test_seeds: [1, 2, 3, 4, 5]
+  dropout_levels: [0.0, 0.25, 0.5, 0.75, 1.0]

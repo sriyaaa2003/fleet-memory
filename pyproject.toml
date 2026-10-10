@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fleetmem"
 version = "0.1.0"
-description = "Fleet Memory: a decaying shared memory of road-cell slowdowns from 383 real vehicles (VED), scored against history-only baselines."
+description = "Fleet Memory: a decaying shared memory of road-cell slowdowns from 384 real vehicles (VED), scored against history-only baselines."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

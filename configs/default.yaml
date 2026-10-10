@@ -1,71 +1,37 @@
-# Every tunable of the experiment lives here. Thresholds were fixed a priori and are
-# NOT tuned on the test seeds.
-sim:
-  road_seed: 7            # fixes road appearance and event-type camera signatures
-  n_segments: 40
-  seg_time_s: 6.7         # time a vehicle needs per segment
-  rest_s: 120.0           # gap between laps
-  n_vehicles: 8
-  duration_s: 7200.0
-  time_jitter_s: 1.0
-  n_events: 14            # condition changes injected per run
-  event_min_s: 900.0
-  event_max_s: 2400.0
-  effect_prob: 0.85       # chance a vehicle's signals reflect an active event
-  cam_dim: 16
-  cam_noise: 0.3
-  appearance_std: 1.0
-  slip_base: 0.05
-  slip_sd: 0.02
-  decel_base: 1.0
-  decel_sd: 0.4
-  vehicle_slip_bias_sd: 0.01
-  kinds:
-    low_traction:         # strong CAN signature, weak camera signature
-      weight: 0.5
-      slip_shift: 0.07
-      decel_shift: 0.0
-      cam_shift: 0.1
-    obstruction:          # strong camera signature, weak CAN signature
-      weight: 0.5
-      slip_shift: 0.0
-      decel_shift: 0.5
-      cam_shift: 0.5
+# Every tunable of the experiment lives here. Thresholds are fixed on the validation period, never on the test period.
+seed: 7
+
+data:
+  raw_dir: data/raw/ved            # weekly CSVs of the Vehicle Energy Dataset (Oh, Leblanc, Peng 2022)
+  passes_file: data/passes.parquet
+  cell_lat_deg: 0.0015             # ~167 m
+  cell_lon_deg: 0.0020             # ~165 m at 42.3 N (Ann Arbor)
+  heading_bins: 4                  # the same square in opposite directions is a different road cell
+  min_records_per_pass: 3
+  min_speed_records: 3
+
+periods:                           # day numbers counted from 2017-11-01
+  train_days: [0, 150]             # free-flow speed and the static prior are learned here
+  val_days: [150, 240]             # the fusion model and the warning threshold are fitted here
+  test_days: [240, 365]
+
+condition:
+  min_train_passes: 60             # a road cell needs this many training passes to be scored
+  free_flow_quantile: 0.85         # free-flow speed of a cell = this quantile of its pass speeds in the training period
+  min_free_flow_kmh: 40.0          # drop car parks and side streets
+  slow_ratio: 0.6                  # a pass is "slow" when its mean speed is below this share of free flow
 
 memory:
-  half_life_s: 900.0      # evidence halves every 15 min
-  prior_p: 0.05
-  llr_clip: 4.0
-  ledger_max_per_segment: 200
+  half_life_s: 600.0               # evidence halves every 10 minutes
+  prior_weight: 1.0                # the static prior counts as this many observations
+  last_window_s: 1800.0            # "last pass" baseline looks back this far
 
-warn:
-  p_threshold: 0.8
-  min_n_eff: 0.5
+static:
+  hour_block: 3                    # hours per time-of-day bucket (weekday / weekend x block)
+  smoothing: 10.0                  # pseudo-count pulling a bucket towards the cell's overall slow rate
 
-timestamp:                # baseline: raw single-threshold trigger held for a fixed window
-  hold_s: 900.0
-  slip_trigger: 0.10
-  decel_trigger: 2.5
-
-recommend:
-  window_s: 1800.0
-  min_vehicles: 2
-  max_age_s: 900.0
-  conflict_ratio: 0.5
-  dominance: 2.0
-  max_cited: 6
-  max_frames: 3
-  policy:
-    reduced_traction:
-      - "Warn approaching vehicles about reduced traction on segment {segment}."
-      - "Propose a review of the speed setting for segment {segment}."
-    visual_obstruction:
-      - "Warn approaching vehicles about a possible obstruction on segment {segment}."
-      - "Propose a review of routing around segment {segment}."
-    unspecified_condition_change:
-      - "Flag segment {segment} for operator review: conditions changed, cause unclear."
-
-eval:
-  train_seed: 1000
-  test_seeds: [1, 2, 3, 4, 5]
-  dropout_levels: [0.0, 0.25, 0.5, 0.75, 1.0]
+evaluate:
+  fleet_fractions: [0.1, 0.25, 0.5, 1.0]   # share of vehicles whose passes feed the memory
+  warn_precision: 0.5              # warning threshold: the loosest one with this precision on the validation period
+  n_boot: 200
+  fresh_n_eff: 0.5                 # a query has "fresh evidence" when the decayed pass count is at least this

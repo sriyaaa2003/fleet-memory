@@ -1,38 +1,31 @@
-# Results (synthetic fleet simulator)
+1,142,925 passes through 2,429 road cells by 384 vehicles. Slow-pass rate: train 20.6%, val 19.2%, test 19.1%.
 
-> All numbers come from the synthetic fleet simulator, not from real vehicle data. Mean ± std over 5 held-out seeds; `n/a` means undefined (e.g. precision with zero warnings).
+| test days, all passes | AP [95% CI] | AUROC [95% CI] | Brier |
+|---|---|---|---|
+| static (history only) | 0.485 [0.478, 0.491] | 0.816 [0.812, 0.821] | 0.122 |
+| last pass | 0.505 [0.498, 0.512] | 0.802 [0.799, 0.806] | 0.129 |
+| fleet memory | 0.533 [0.525, 0.541] | 0.834 [0.831, 0.837] | 0.118 |
+| fused | 0.541 [0.533, 0.550] | 0.837 [0.834, 0.841] | 0.115 |
 
-## Clean sensors
+Fused minus static: AP +0.057 [+0.051, +0.061], AUROC +0.022 [+0.019, +0.023].
 
-| method | precision | recall | F1 | false-alarm rate | event recall | detection delay (s) | lead time (s) |
-|---|---|---|---|---|---|---|---|
-| timestamp | 0.196 ± 0.048 | 0.568 ± 0.073 | 0.285 ± 0.049 | 0.2207 ± 0.0910 | 0.743 ± 0.125 | 71 ± 28 | 825 ± 91 |
-| can_only | 0.626 ± 0.042 | 0.284 ± 0.055 | 0.386 ± 0.050 | 0.0148 ± 0.0040 | 0.429 ± 0.045 | 555 ± 107 | 612 ± 58 |
-| camera_only | 0.507 ± 0.027 | 0.481 ± 0.030 | 0.493 ± 0.018 | 0.0405 ± 0.0055 | 0.600 ± 0.035 | 270 ± 45 | 698 ± 71 |
-| fusion | 0.654 ± 0.032 | 0.490 ± 0.103 | 0.555 ± 0.076 | 0.0220 ± 0.0035 | 0.871 ± 0.114 | 788 ± 100 | 523 ± 57 |
+Fresh evidence (decayed pass count at least the configured level) exists for 8% of queries. 'Unexpected' passes (static prior below 0.10) are 45% of queries and 4.2% of them are slow.
 
-## F1 when the camera signal is dropped (fraction of passes)
+| subset | static AP | last AP | memory AP | fused AP |
+|---|---|---|---|---|
+| fresh evidence | 0.680 | 0.651 | 0.720 | 0.728 |
+| no fresh evidence | 0.441 | 0.423 | 0.441 | 0.440 |
+| unexpected (prior < 0.10) | 0.071 | 0.201 | 0.225 | 0.228 |
 
-| method | 0.00 | 0.25 | 0.50 | 0.75 | 1.00 |
-|---|---|---|---|---|---|
-| timestamp | 0.285 ± 0.049 | 0.285 ± 0.049 | 0.285 ± 0.049 | 0.285 ± 0.049 | 0.285 ± 0.049 |
-| can_only | 0.386 ± 0.050 | 0.386 ± 0.050 | 0.386 ± 0.050 | 0.386 ± 0.050 | 0.386 ± 0.050 |
-| camera_only | 0.493 ± 0.018 | 0.493 ± 0.019 | 0.467 ± 0.026 | 0.423 ± 0.037 | 0.000 ± 0.000 |
-| fusion | 0.555 ± 0.076 | 0.536 ± 0.082 | 0.475 ± 0.090 | 0.406 ± 0.069 | 0.386 ± 0.050 |
+| memory fed by this share of vehicles | static AP | memory AP | fused AP | share with fresh evidence |
+|---|---|---|---|---|
+| 10% | 0.485 | 0.492 | 0.493 | 1% |
+| 25% | 0.485 | 0.494 | 0.496 | 2% |
+| 50% | 0.485 | 0.510 | 0.515 | 3% |
+| 100% | 0.485 | 0.533 | 0.541 | 8% |
 
-## F1 when the CAN signal is dropped (fraction of passes)
-
-| method | 0.00 | 0.25 | 0.50 | 0.75 | 1.00 |
-|---|---|---|---|---|---|
-| timestamp | 0.285 ± 0.049 | 0.301 ± 0.043 | 0.326 ± 0.027 | 0.368 ± 0.062 | 0.000 ± 0.000 |
-| can_only | 0.386 ± 0.050 | 0.367 ± 0.054 | 0.344 ± 0.055 | 0.272 ± 0.076 | 0.000 ± 0.000 |
-| camera_only | 0.493 ± 0.018 | 0.493 ± 0.018 | 0.493 ± 0.018 | 0.493 ± 0.018 | 0.493 ± 0.018 |
-| fusion | 0.555 ± 0.076 | 0.554 ± 0.064 | 0.562 ± 0.046 | 0.531 ± 0.042 | 0.493 ± 0.018 |
-
-## Evidence-grounded recommender (fusion, clean sensors)
-
-- Warned passes that produced a recommendation (rest abstained): 0.981 ± 0.006
-- Precision of emitted recommendations: 0.647 ± 0.032 (vs. warning precision 0.654 ± 0.032)
-- Emitted recommendations passing citation verification: 1.000 ± 0.000
-
-Citation verification is 1.0 by construction for the template renderer; it becomes a real test once an LLM phrases the claims.
+| warning rule (threshold from validation days) | threshold | precision | recall | warnings per 1000 passes |
+|---|---|---|---|---|
+| static (history only) | 0.400 | 0.493 | 0.524 | 202.4 |
+| fleet memory | 0.371 | 0.493 | 0.630 | 243.7 |
+| fused | 0.309 | 0.495 | 0.647 | 249.3 |

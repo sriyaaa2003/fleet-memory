@@ -1,37 +1,43 @@
-"""Command line entry point: `fleetmem run --config configs/default.yaml --out results`."""
-
+"""Command line: fleetmem download | passes | run."""
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
 
+import pandas as pd
+
 from .config import ConfigError, load_config
-from .experiment import run
-from .report import plot_dropout, to_markdown
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="fleetmem")
-    sub = parser.add_subparsers(dest="command", required=True)
-    p_run = sub.add_parser("run", help="train, replay held-out fleets, write results")
-    p_run.add_argument("--config", default="configs/default.yaml")
-    p_run.add_argument("--out", default="results")
-    args = parser.parse_args(argv)
-
+    ap = argparse.ArgumentParser(prog="fleetmem")
+    ap.add_argument("command", choices=["download", "passes", "run"])
+    ap.add_argument("--config", default="configs/default.yaml")
+    ap.add_argument("--out", default="results")
+    a = ap.parse_args(argv)
     try:
-        cfg = load_config(args.config)
+        cfg = load_config(a.config)
     except (OSError, ConfigError) as exc:
         print(f"config error: {exc}")
         return 2
+    from . import ved
 
-    res = run(cfg)
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "results.json").write_text(json.dumps(res, indent=2), encoding="utf-8")
-    (out / "results.md").write_text(to_markdown(res), encoding="utf-8")
-    plot = plot_dropout(res, out)
-    print(f"wrote {out / 'results.json'} and {out / 'results.md'}" + (f", {plot}" if plot else ""))
+    if a.command == "download":
+        ved.download(cfg)
+    elif a.command == "passes":
+        df = ved.build_passes(cfg)
+        print(f"{df.height:,} passes, {df['key'].n_unique():,} road cells, {df['veh'].n_unique()} vehicles")
+    else:
+        from .evaluate import run
+        from .report import plot, to_markdown
+
+        passes = ved.build_passes(cfg).to_pandas()
+        out = Path(a.out)
+        res = run(cfg, passes, out)
+        (out / "results.md").write_text(to_markdown(res), encoding="utf-8")
+        plot(res, out / "test_scores_sample.parquet", out)
+        print(json.dumps(res["test"]["all"], indent=2))
     return 0
 
 

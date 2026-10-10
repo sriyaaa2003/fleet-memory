@@ -1,10 +1,10 @@
-"""Strict, typed configuration loaded from YAML. Unknown or missing keys are errors."""
-
+"""Typed configuration loaded from YAML; unknown or missing keys are errors."""
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
+import dataclasses
+import typing
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, get_args, get_origin, get_type_hints
 
 import yaml
 
@@ -14,143 +14,115 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
-class EventKindConfig:
-    weight: float
-    slip_shift: float
-    decel_shift: float
-    cam_shift: float
+class Data:
+    raw_dir: str
+    passes_file: str
+    cell_lat_deg: float
+    cell_lon_deg: float
+    heading_bins: int
+    min_records_per_pass: int
+    min_speed_records: int
 
 
 @dataclass(frozen=True)
-class SimConfig:
-    road_seed: int
-    n_segments: int
-    seg_time_s: float
-    rest_s: float
-    n_vehicles: int
-    duration_s: float
-    time_jitter_s: float
-    n_events: int
-    event_min_s: float
-    event_max_s: float
-    effect_prob: float
-    cam_dim: int
-    cam_noise: float
-    appearance_std: float
-    slip_base: float
-    slip_sd: float
-    decel_base: float
-    decel_sd: float
-    vehicle_slip_bias_sd: float
-    kinds: dict[str, EventKindConfig]
+class Periods:
+    train_days: list[int]
+    val_days: list[int]
+    test_days: list[int]
 
 
 @dataclass(frozen=True)
-class MemoryConfig:
+class Condition:
+    min_train_passes: int
+    free_flow_quantile: float
+    min_free_flow_kmh: float
+    slow_ratio: float
+
+
+@dataclass(frozen=True)
+class Memory:
     half_life_s: float
-    prior_p: float
-    llr_clip: float
-    ledger_max_per_segment: int
+    prior_weight: float
+    last_window_s: float
 
 
 @dataclass(frozen=True)
-class WarnConfig:
-    p_threshold: float
-    min_n_eff: float
+class Static:
+    hour_block: int
+    smoothing: float
 
 
 @dataclass(frozen=True)
-class TimestampConfig:
-    hold_s: float
-    slip_trigger: float
-    decel_trigger: float
-
-
-@dataclass(frozen=True)
-class RecommendConfig:
-    window_s: float
-    min_vehicles: int
-    max_age_s: float
-    conflict_ratio: float
-    dominance: float
-    max_cited: int
-    max_frames: int
-    policy: dict[str, list[str]]
-
-
-@dataclass(frozen=True)
-class EvalConfig:
-    train_seed: int
-    test_seeds: list[int]
-    dropout_levels: list[float]
+class Evaluate:
+    fleet_fractions: list[float]
+    warn_precision: float
+    n_boot: int
+    fresh_n_eff: float
 
 
 @dataclass(frozen=True)
 class Config:
-    sim: SimConfig
-    memory: MemoryConfig
-    warn: WarnConfig
-    timestamp: TimestampConfig
-    recommend: RecommendConfig
-    eval: EvalConfig
-
-    def validate(self) -> None:
-        s, m = self.sim, self.memory
-        _require(s.n_segments > 0 and s.n_vehicles > 0, "sim needs segments and vehicles")
-        _require(s.seg_time_s > 0 and s.duration_s > 0, "sim times must be positive")
-        _require(0 <= s.effect_prob <= 1, "sim.effect_prob must be in [0, 1]")
-        _require(s.event_min_s <= s.event_max_s, "sim.event_min_s must be <= event_max_s")
-        _require(bool(s.kinds), "sim.kinds must not be empty")
-        _require(sum(k.weight for k in s.kinds.values()) > 0, "sim.kinds weights must sum > 0")
-        _require(0 < m.prior_p < 1, "memory.prior_p must be in (0, 1)")
-        _require(m.half_life_s > 0 and m.llr_clip > 0, "memory half-life and clip must be > 0")
-        _require(0 < self.warn.p_threshold < 1, "warn.p_threshold must be in (0, 1)")
-        _require(
-            all(0 <= d <= 1 for d in self.eval.dropout_levels), "dropout levels must be in [0, 1]"
-        )
-        _require(bool(self.eval.test_seeds), "eval.test_seeds must not be empty")
-        _require(
-            self.eval.train_seed not in self.eval.test_seeds,
-            "train seed must not be a test seed",
-        )
-        for cause in ("reduced_traction", "visual_obstruction", "unspecified_condition_change"):
-            _require(cause in self.recommend.policy, f"recommend.policy missing '{cause}'")
+    seed: int
+    data: Data
+    periods: Periods
+    condition: Condition
+    memory: Memory
+    static: Static
+    evaluate: Evaluate
 
 
-def _require(cond: bool, msg: str) -> None:
-    if not cond:
-        raise ConfigError(msg)
+def _build(tp: typing.Any, data: typing.Any, path: str) -> typing.Any:
+    if dataclasses.is_dataclass(tp):
+        if not isinstance(data, dict):
+            raise ConfigError(f"{path}: expected a mapping")
+        hints = typing.get_type_hints(tp)
+        unknown = set(data) - set(hints)
+        if unknown:
+            raise ConfigError(f"{path}: unknown keys {sorted(unknown)}")
+        kwargs = {}
+        for f in dataclasses.fields(tp):
+            if f.name not in data:
+                raise ConfigError(f"{path}.{f.name}: missing")
+            kwargs[f.name] = _build(hints[f.name], data[f.name], f"{path}.{f.name}")
+        return tp(**kwargs)
+    if typing.get_origin(tp) is list:
+        (arg,) = typing.get_args(tp)
+        if not isinstance(data, list):
+            raise ConfigError(f"{path}: expected a list")
+        return [_build(arg, x, f"{path}[{i}]") for i, x in enumerate(data)]
+    if tp is float:
+        if isinstance(data, bool) or not isinstance(data, (int, float)):
+            raise ConfigError(f"{path}: expected a number")
+        return float(data)
+    if tp is int:
+        if isinstance(data, bool) or not isinstance(data, int):
+            raise ConfigError(f"{path}: expected an integer")
+        return data
+    if not isinstance(data, tp):
+        raise ConfigError(f"{path}: expected {tp.__name__}")
+    return data
 
 
-def _build(cls: type, data: Any, path: str) -> Any:
-    if not isinstance(data, dict):
-        raise ConfigError(f"{path}: expected a mapping")
-    hints = get_type_hints(cls)
-    names = {f.name for f in fields(cls)}
-    unknown = set(data) - names
-    if unknown:
-        raise ConfigError(f"{path}: unknown keys {sorted(unknown)}")
-    missing = names - set(data)
-    if missing:
-        raise ConfigError(f"{path}: missing keys {sorted(missing)}")
-    kwargs: dict[str, Any] = {}
-    for name, value in data.items():
-        tp = hints[name]
-        where = f"{path}.{name}"
-        if is_dataclass(tp):
-            kwargs[name] = _build(tp, value, where)
-        elif get_origin(tp) is dict and is_dataclass(get_args(tp)[1]):
-            if not isinstance(value, dict):
-                raise ConfigError(f"{where}: expected a mapping")
-            kwargs[name] = {k: _build(get_args(tp)[1], v, f"{where}.{k}") for k, v in value.items()}
-        else:
-            kwargs[name] = value
-    return cls(**kwargs)
+def validate(cfg: Config) -> None:
+    p = cfg.periods
+    for name, span in (("train_days", p.train_days), ("val_days", p.val_days), ("test_days", p.test_days)):
+        if len(span) != 2 or span[0] >= span[1]:
+            raise ConfigError(f"periods.{name}: need [start, end) with start < end")
+    if not (p.train_days[1] <= p.val_days[0] and p.val_days[1] <= p.test_days[0]):
+        raise ConfigError("periods must be ordered train < val < test without overlap")
+    c = cfg.condition
+    if not 0 < c.slow_ratio < 1 or not 0.5 <= c.free_flow_quantile < 1:
+        raise ConfigError("condition: slow_ratio in (0,1) and free_flow_quantile in [0.5,1)")
+    if cfg.memory.half_life_s <= 0 or cfg.memory.prior_weight <= 0:
+        raise ConfigError("memory: half_life_s and prior_weight must be positive")
+    if not all(0 < f <= 1 for f in cfg.evaluate.fleet_fractions):
+        raise ConfigError("evaluate.fleet_fractions must be in (0,1]")
+    if 24 % cfg.static.hour_block != 0:
+        raise ConfigError("static.hour_block must divide 24")
 
 
-def load_config(path: str | Path) -> Config:
+def load_config(path: str | Path = "configs/default.yaml") -> Config:
     with open(path, encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh)
-    cfg = _build(Config, raw, "config")
-    cfg.validate()
+        cfg = _build(Config, yaml.safe_load(fh), "config")
+    validate(cfg)
     return cfg

@@ -1,85 +1,89 @@
-"""Online replay of a fleet's observations in time order.
+"""Time-ordered replay of the fleet's passes: what would a vehicle arriving at a road cell have known?
 
-For each pass the memory is queried *before* the pass's own observation is folded in, so a warning
-only ever uses information from earlier vehicles (no look-ahead, no self-confirmation).
-"""
-
+A pass becomes visible to the memory when it *ends* (t1). A vehicle about to enter a cell at t0 queries the memory before
+its own pass is folded in, and only passes that ended at or before t0 are visible, so nothing from the future leaks.
+Updates are processed before queries at equal times."""
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+import numpy as np
+import pandas as pd
 
-from .config import WarnConfig
-from .recommend import EvidenceLedger, EvidenceRecord, Recommendation, verify
-from .schema import CAN_DECEL, CAN_SLIP, Observation
-
-
-@dataclass(frozen=True)
-class PassRecord:
-    obs_id: str
-    t: float
-    segment: int
-    warn: bool
-    truth: bool
-    event_id: int | None
-    p: float
-    warn_since: float | None
-    rec_kind: str | None = None  # "warn" | "abstain" for warned passes when a recommender runs
-    rec_verified: bool | None = None
+from .config import Config
+from .memory import DecayMemory
 
 
-def replay(
-    obs: list[Observation],
-    llrs: list[float | None],
-    contribs: list[dict[str, float]],
-    labels: dict[str, int | None],
-    memory,
-    warn_cfg: WarnConfig,
-    ledger: EvidenceLedger | None = None,
-    recommender: Callable[[int, float], Recommendation] | None = None,
-) -> list[PassRecord]:
-    if any(b.t < a.t for a, b in zip(obs, obs[1:], strict=False)):
-        raise ValueError("observations must be sorted by time")
-    if not (len(obs) == len(llrs) == len(contribs)):
-        raise ValueError("observations, llrs and contribs must align")
+def condition_table(passes: pd.DataFrame, cfg: Config) -> pd.DataFrame:
+    """Keep scorable cells and label every pass slow / not slow against its cell's free-flow speed (from training days only)."""
+    c, p = cfg.condition, cfg.periods
+    train = passes[(passes.day >= p.train_days[0]) & (passes.day < p.train_days[1])]
+    g = train.groupby("key").v_mean
+    stats = pd.DataFrame({"n": g.size(), "ff": g.quantile(c.free_flow_quantile)})
+    cells = stats[(stats.n >= c.min_train_passes) & (stats.ff >= c.min_free_flow_kmh)]
+    df = passes[passes.key.isin(cells.index)].copy()
+    df["ff"] = df.key.map(cells.ff)
+    df["slow"] = df.v_mean < c.slow_ratio * df.ff
+    df["period"] = np.select([df.day < p.train_days[1], df.day < p.val_days[1]], ["train", "val"], "test")
+    return df.reset_index(drop=True)
 
-    def warned(state) -> bool:
-        return state.p >= warn_cfg.p_threshold and state.n_eff >= warn_cfg.min_n_eff
 
-    since: dict[int, float] = {}
-    out: list[PassRecord] = []
-    for o, llr, contrib in zip(obs, llrs, contribs, strict=True):
-        state = memory.predict(o.segment, o.t)
-        warn = warned(state)
-        if not warn:
-            since.pop(o.segment, None)
-        rec_kind = rec_ok = None
-        if warn and recommender is not None:
-            rec = recommender(o.segment, o.t)
-            rec_kind, rec_ok = rec.kind, (verify(rec, ledger) if ledger is not None else None)
-        event_id = labels.get(o.obs_id)
-        out.append(
-            PassRecord(
-                o.obs_id, o.t, o.segment, warn, event_id is not None, event_id, state.p,
-                since.get(o.segment) if warn else None, rec_kind, rec_ok,
-            )
-        )
-        memory.update(o.obs_id, o.segment, o.t, llr)
-        if llr is not None and ledger is not None:
-            ledger.add(
-                EvidenceRecord(
-                    obs_id=o.obs_id,
-                    vehicle_id=o.vehicle_id,
-                    t=o.t,
-                    segment=o.segment,
-                    llr=llr,
-                    can_llr=contrib.get("can"),
-                    cam_llr=contrib.get("cam"),
-                    slip_ratio=o.can[CAN_SLIP] if o.can else None,
-                    decel_mps2=o.can[CAN_DECEL] if o.can else None,
-                    frame_ref=o.frame_ref,
-                )
-            )
-        if warned(memory.predict(o.segment, o.t)):
-            since.setdefault(o.segment, o.t)
-    return out
+def bucket(day: np.ndarray, t: np.ndarray, hour_block: int) -> np.ndarray:
+    """0..(2 * 24/hour_block - 1): weekday/weekend x time-of-day block. Day 0 of VED is a Wednesday."""
+    weekday = (np.floor(day).astype(int) + 2) % 7
+    weekend = (weekday >= 5).astype(int)
+    hour = (t % 86400.0) // 3600.0
+    return weekend * (24 // hour_block) + (hour // hour_block).astype(int)
+
+
+class StaticPrior:
+    """P(slow | cell, weekday/weekend, time-of-day block), smoothed toward the cell's overall slow rate. Training days only."""
+
+    def __init__(self, train: pd.DataFrame, cfg: Config):
+        self.block = cfg.static.hour_block
+        self.m = cfg.static.smoothing
+        b = bucket(train.day.to_numpy(), train.t0.to_numpy(), self.block)
+        d = pd.DataFrame({"key": train.key.to_numpy(), "b": b, "slow": train.slow.to_numpy().astype(float)})
+        cell = d.groupby("key").slow.mean()
+        self.cell_rate = cell
+        agg = d.groupby(["key", "b"]).slow.agg(["sum", "count"])
+        self.table = {(k, bb): (s, n) for k, bb, s, n in zip(agg.index.get_level_values(0), agg.index.get_level_values(1), agg["sum"], agg["count"])}
+        self.default = float(d.slow.mean())
+
+    def predict(self, keys: np.ndarray, day: np.ndarray, t: np.ndarray) -> np.ndarray:
+        b = bucket(day, t, self.block)
+        out = np.empty(len(keys))
+        for i, (k, bb) in enumerate(zip(keys, b)):
+            base = self.cell_rate.get(k, self.default)
+            s, n = self.table.get((k, bb), (0.0, 0))
+            out[i] = (s + self.m * base) / (n + self.m)
+        return out
+
+
+def replay(df: pd.DataFrame, prior: np.ndarray, cfg: Config, feed: np.ndarray | None = None) -> pd.DataFrame:
+    """Memory features for every pass in the validation and test periods.
+
+    `feed` marks which passes the memory may learn from (all by default); the fleet-size experiment passes a subset."""
+    feed = np.ones(len(df), dtype=bool) if feed is None else feed
+    mem = DecayMemory(cfg.memory.half_life_s, cfg.memory.prior_weight)
+    key, t0, t1, slow = df.key.to_numpy(), df.t0.to_numpy(), df.t1.to_numpy(), df.slow.to_numpy()
+    query = (df.period != "train").to_numpy()
+    n = len(df)
+    # events: updates (type 0) at t1, queries (type 1) at t0; at equal times updates come first
+    times = np.concatenate([t1[feed], t0[query]])
+    kind = np.concatenate([np.zeros(feed.sum(), dtype=int), np.ones(query.sum(), dtype=int)])
+    idx = np.concatenate([np.flatnonzero(feed), np.flatnonzero(query)])
+    order = np.lexsort((kind, times))
+    p_mem = np.full(n, np.nan)
+    n_eff = np.zeros(n)
+    last = np.full(n, np.nan)
+    age = np.full(n, np.nan)
+    for e in order:
+        i = idx[e]
+        if kind[e] == 0:
+            mem.update(i, int(key[i]), float(t1[i]), bool(slow[i]))
+        else:
+            st = mem.query(int(key[i]), float(t0[i]), float(prior[i]))
+            p_mem[i], n_eff[i] = st.p, st.n_eff
+            if st.last_slow is not None and st.age_s <= cfg.memory.last_window_s:
+                last[i], age[i] = st.last_slow, st.age_s
+    out = df.assign(prior=prior, p_mem=p_mem, n_eff=n_eff, last_slow=last, last_age=age)
+    return out[out.period != "train"].reset_index(drop=True)

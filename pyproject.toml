@@ -5,12 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fleetmem"
 version = "0.1.0"
-description = "Fleet Memory: a decaying spatiotemporal site-condition map built from multi-vehicle observations, with evidence-grounded warnings."
+description = "Fleet Memory: a decaying shared memory of road-cell slowdowns from 383 real vehicles (VED), scored against history-only baselines."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     "numpy>=1.26",
+    "pandas>=2.0",
+    "polars>=1.0",
+    "pyarrow>=15",
+    "scikit-learn>=1.4",
     "pyyaml>=6.0",
 ]
 
